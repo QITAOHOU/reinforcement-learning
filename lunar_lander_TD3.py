@@ -94,7 +94,7 @@ def train_critics(states, actions, next_states, rewards, dones):
 
     min_critic = tf.math.minimum(target_critic_1([next_states, target_mu], training=False), 
                                  target_critic_2([next_states, target_mu], training=False))
-    target_q = rewards + gamma * tf.reduce_max((1 - dones) * min_critic, axis = 1)
+    target_q = rewards + gamma * (1 - dones) * min_critic
 
     with tf.GradientTape() as tape:
         current_q = critic_1([states, actions], training=True)
