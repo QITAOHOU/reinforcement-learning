@@ -89,7 +89,7 @@ def critic_network():
 @tf.function
 def train_actor_critic(states, actions, next_states, rewards, dones):
     target_mu = target_policy(next_states, training=False)
-    target_q = rewards + gamma * (1 - dones) * target_critic([next_states, target_mu], training=False)
+    target_q = rewards + gamma * (1 - dones) * tf.reduce_max(target_critic([next_states, target_mu], training=False), axis = 1)
 
     with tf.GradientTape() as tape:
         current_q = critic([states, actions], training=True)

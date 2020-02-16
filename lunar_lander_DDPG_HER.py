@@ -13,10 +13,10 @@ env = gym.make('LunarLanderContinuous-v2')
 X_shape = (env.observation_space.shape[0])
 outputs_count = env.action_space.shape[0]
 
-batch_size = 64
+batch_size = 128
 num_episodes = 5000
 actor_learning_rate = 1e-4
-critic_learning_rate = 1e-3
+critic_learning_rate = 5e-4
 gamma = 0.99
 tau = 0.001
 K = 4
@@ -53,10 +53,13 @@ def policy_network():
     #goal_input = keras.layers.Input(shape=(X_shape)) #HER
     #x = keras.layers.Concatenate()([observation_input, goal_input]) #HER
 
-    x = keras.layers.Dense(400, activation='relu', 
+    x = keras.layers.Dense(256, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(observation_input)
-    x = keras.layers.Dense(300, activation='relu', 
+    x = keras.layers.Dense(128, activation='relu', 
+                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
+                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
+    x = keras.layers.Dense(64, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
     output = keras.layers.Dense(outputs_count, activation='tanh',
@@ -71,17 +74,13 @@ def critic_network():
     actions_input = keras.layers.Input(shape=(outputs_count))
     input = keras.layers.Input(shape=(X_shape))
 
-    x = keras.layers.Dense(400, activation='relu', 
+    x = keras.layers.Dense(256, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           kernel_regularizer = keras.regularizers.l2(0.01),
-                           bias_regularizer = keras.regularizers.l2(0.01))(input)
+                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(input)
     x = keras.layers.Concatenate()([x, actions_input])
-    x = keras.layers.Dense(300, activation='relu', 
+    x = keras.layers.Dense(128, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           kernel_regularizer = keras.regularizers.l2(0.01),
-                           bias_regularizer = keras.regularizers.l2(0.01))(x)
+                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
     q_layer = keras.layers.Dense(1, activation='linear',
                                 kernel_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
                                 bias_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
@@ -95,7 +94,8 @@ def critic_network():
 def train_actor_critic(states, actions, next_states, rewards, dones):
     #target_mu = target_policy([next_states, goals], training=False) #HER
     target_mu = target_policy(next_states, training=False)
-    target_q = rewards + gamma * (1 - dones) * target_critic([next_states, target_mu], training=False)
+    target_q = rewards + gamma * tf.reduce_max((1 - dones) * target_critic([next_states, target_mu], training=False), axis = 1)
+    #tf.reduce_max((1 - dones) * target_critic([next_states, target_mu], training=False), axis = 1)
 
     with tf.GradientTape() as tape:
         current_q = critic([states, actions], training=True)
