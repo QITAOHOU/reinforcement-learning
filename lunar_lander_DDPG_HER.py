@@ -15,7 +15,7 @@ outputs_count = env.action_space.shape[0]
 
 batch_size = 128
 num_episodes = 5000
-actor_learning_rate = 1e-4
+actor_learning_rate = 5e-4
 critic_learning_rate = 5e-4
 gamma = 0.99
 tau = 0.001
@@ -26,8 +26,6 @@ RND_SEED = 0x12345
 checkpoint_step = 500
 global_step = 0
 steps_train = 4
-
-use_HER = False
 
 lunar_lander_goal_state = tf.constant([.0,.0, .0,.0, .0,.0, 1.,1.], dtype = tf.float32, shape=(8,))
 
@@ -45,17 +43,16 @@ np.random.random(RND_SEED)
 
 exp_buffer_capacity = 1000000
 
-#exp_buffer = HER_SARST_RandomAccess_MemoryBuffer(exp_buffer_capacity, env.observation_space.shape, env.action_space.shape) #HER
-exp_buffer = SARST_RandomAccess_MemoryBuffer(exp_buffer_capacity, env.observation_space.shape, env.action_space.shape)
+exp_buffer = HER_SARST_RandomAccess_MemoryBuffer(exp_buffer_capacity, env.observation_space.shape, env.action_space.shape) #HER
 
 def policy_network():
     observation_input = keras.layers.Input(shape=(X_shape))
-    #goal_input = keras.layers.Input(shape=(X_shape)) #HER
-    #x = keras.layers.Concatenate()([observation_input, goal_input]) #HER
+    goal_input = keras.layers.Input(shape=(X_shape))
+    x = keras.layers.Concatenate()([observation_input, goal_input])
 
     x = keras.layers.Dense(256, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(observation_input)
+                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
     x = keras.layers.Dense(128, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
@@ -66,8 +63,7 @@ def policy_network():
                                 kernel_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
                                 bias_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED))(x)
 
-    #model = keras.Model(inputs=[observation_input, goal_input], outputs=output)  #HER
-    model = keras.Model(inputs=observation_input, outputs=output)
+    model = keras.Model(inputs=[observation_input, goal_input], outputs=output)
     return model
 
 def critic_network():
@@ -91,11 +87,9 @@ def critic_network():
     return model
 
 @tf.function
-def train_actor_critic(states, actions, next_states, rewards, dones):
-    #target_mu = target_policy([next_states, goals], training=False) #HER
-    target_mu = target_policy(next_states, training=False)
+def train_actor_critic(states, actions, next_states, rewards, goals, dones):
+    target_mu = target_policy([next_states, goals], training=False)
     target_q = rewards + gamma * tf.reduce_max((1 - dones) * target_critic([next_states, target_mu], training=False), axis = 1)
-    #tf.reduce_max((1 - dones) * target_critic([next_states, target_mu], training=False), axis = 1)
 
     with tf.GradientTape() as tape:
         current_q = critic([states, actions], training=True)
@@ -104,8 +98,7 @@ def train_actor_critic(states, actions, next_states, rewards, dones):
     critic_optimizer.apply_gradients(zip(gradients, critic.trainable_variables))
 
     with tf.GradientTape() as tape:
-        #current_mu = actor([states, goals], training=True) #HER
-        current_mu = actor(states, training=True)
+        current_mu = actor([states, goals], training=True)
         current_q = critic([states, current_mu], training=False)
         a_loss = tf.reduce_mean(-current_q)
     gradients = tape.gradient(a_loss, actor.trainable_variables)
@@ -176,35 +169,24 @@ rewards_history = []
 for i in range(num_episodes):
     done = False
     observation = env.reset()
-    #goal = get_episode_goal() #HER
+    goal = get_episode_goal()
 
     episodic_reward = 0
     epoch_steps = 0
     episodic_loss = []
     critic_loss_history = []
     actor_loss_history = []
-    #replay_buffer_write_idxs = []  #HER
+    replay_buffer_write_idxs = []
 
     while not done:
         #env.render()
-        #chosen_action = actor([np.expand_dims(observation, axis = 0), np.expand_dims(goal, axis = 0)], training=False)[0].numpy() + action_noise() #HER
-        chosen_action = actor(np.expand_dims(observation, axis = 0), training=False)[0].numpy() + action_noise()
+        chosen_action = actor([np.expand_dims(observation, axis = 0), np.expand_dims(goal, axis = 0)], training=False)[0].numpy() + action_noise()
         next_observation, reward, done, _ = env.step(chosen_action)
 
-        #sparse_reward = get_sparse_reward(observation, goal)  #HER
-        #exp_buffer.store(observation, goal, chosen_action, next_observation, sparse_reward, float(done)) #HER
-        #if not done:
-        #    replay_buffer_write_idxs.append(exp_buffer.memory_idx)  #HER
-
-        exp_buffer.store(observation, chosen_action, next_observation, reward, float(done))
-
-        if global_step > 10 * batch_size and global_step % steps_train == 0:
-            actor_loss, critic_loss = train_actor_critic(*exp_buffer(batch_size))
-
-            actor_loss_history.append(actor_loss)
-            critic_loss_history.append(critic_loss)
-            
-            soft_update_models()
+        sparse_reward = get_sparse_reward(observation, goal)
+        exp_buffer.store(observation, goal, chosen_action, next_observation, sparse_reward, float(done))
+        if not done:
+            replay_buffer_write_idxs.append(exp_buffer.get_write_idx())
 
         observation = next_observation
         global_step+=1
@@ -212,23 +194,24 @@ for i in range(num_episodes):
         episodic_reward += reward
 
     # Hindsight Experience Replay
-    #for idx in replay_buffer_write_idxs:
-    #    sub_goals = HER_GoalSelectionStrategy.episode(exp_buffer, replay_buffer_write_idxs, K)
-    #    for g in sub_goals:
-    #        sub_goal_reward = get_sparse_reward(exp_buffer.states_memory[idx], g)
-    #        exp_buffer.store(exp_buffer.states_memory[idx], 
-    #                         g, 
-    #                         exp_buffer.actions_memory[idx], 
-    #                         exp_buffer.next_states_memory[idx], 
-    #                         sub_goal_reward, 
-    #                         exp_buffer.dones_memory[idx])
+    for idx in replay_buffer_write_idxs:
+        #sub_goals = HER_GoalSelectionStrategy.final(exp_buffer, replay_buffer_write_idxs)
+        sub_goals = HER_GoalSelectionStrategy.episode(exp_buffer, replay_buffer_write_idxs, K)
+        for g in sub_goals:
+            sub_goal_reward = get_sparse_reward(exp_buffer.states_memory[idx], g)
+            exp_buffer.store(exp_buffer.states_memory[idx], 
+                             g, 
+                             exp_buffer.actions_memory[idx], 
+                             exp_buffer.next_states_memory[idx], 
+                             sub_goal_reward, 
+                             exp_buffer.dones_memory[idx])
 
-    #if global_step > 10 * batch_size:
-    #    for _ in range(len(replay_buffer_write_idxs) // steps_train):
-    #        actor_loss, critic_loss = train_actor_critic(*exp_buffer(batch_size))
-    #        actor_loss_history.append(actor_loss)
-    #        critic_loss_history.append(critic_loss)
-    #        soft_update_models()
+    if global_step > 10 * batch_size:
+        for _ in range(len(replay_buffer_write_idxs) // steps_train):
+            actor_loss, critic_loss = train_actor_critic(*exp_buffer(batch_size))
+            actor_loss_history.append(actor_loss)
+            critic_loss_history.append(critic_loss)
+            soft_update_models()
 
     #if i % checkpoint_step == 0 and i > 0:
     #    actor.save(actor_checkpoint_file_name)

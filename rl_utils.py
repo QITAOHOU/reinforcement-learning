@@ -59,11 +59,11 @@ class HER_SARST_RandomAccess_MemoryBuffer(object):
         self.buffer_size = buffer_size
         self.memory_idx = 0
 
-    def get_write_idx(self, memory_idx):
-        return memory_idx % self.buffer_size
+    def get_write_idx(self):
+        return self.memory_idx % self.buffer_size
 
     def store(self, state:tf.Tensor, goal:tf.Tensor, action:tf.Tensor, next_state:tf.Tensor, reward:tf.Tensor, is_terminal:tf.Tensor):
-        write_idx = self.get_write_idx(self.memory_idx)
+        write_idx = self.get_write_idx()
         self.states_memory[write_idx] = state
         self.next_states_memory[write_idx] = next_state
         self.goals_memory[write_idx] = goal
