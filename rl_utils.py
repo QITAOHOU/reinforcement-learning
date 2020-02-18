@@ -59,11 +59,11 @@ class HER_SARST_RandomAccess_MemoryBuffer(object):
         self.buffer_size = buffer_size
         self.memory_idx = 0
 
-    def get_write_idx(self):
+    def __get_write_idx(self):
         return self.memory_idx % self.buffer_size
 
     def store(self, state:tf.Tensor, goal:tf.Tensor, action:tf.Tensor, next_state:tf.Tensor, reward:tf.Tensor, is_terminal:tf.Tensor):
-        write_idx = self.get_write_idx()
+        write_idx = self.__get_write_idx()
         self.states_memory[write_idx] = state
         self.next_states_memory[write_idx] = next_state
         self.goals_memory[write_idx] = goal
@@ -71,6 +71,7 @@ class HER_SARST_RandomAccess_MemoryBuffer(object):
         self.rewards_memory[write_idx] = reward
         self.dones_memory[write_idx] = is_terminal
         self.memory_idx += 1
+        return write_idx
 
     def __call__(self, batch_size):
         upper_bound = self.memory_idx if self.memory_idx < self.buffer_size else self.buffer_size
@@ -92,4 +93,7 @@ class HER_GoalSelectionStrategy:
         return memory_buffer.states_memory[idxs]
     @staticmethod
     def future(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int], current_state_idx:int, K:int):
-        pass
+        if len(episode_mem_idxs)-current_state_idx <= K:
+            return []
+        idxs = np.random.permutation(episode_mem_idxs[current_state_idx:])[:K] # take K random future states
+        return memory_buffer.states_memory[idxs]

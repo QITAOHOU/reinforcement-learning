@@ -14,7 +14,7 @@ X_shape = (env.observation_space.shape[0])
 outputs_count = env.action_space.shape[0]
 
 batch_size = 128
-num_episodes = 5000
+num_episodes = 50000
 actor_learning_rate = 5e-4
 critic_learning_rate = 5e-4
 gamma = 0.99
@@ -141,8 +141,8 @@ Returns sparse reward that replace env returned feedback reward.
 @tf.function
 def get_sparse_reward(state, goal) -> tf.Tensor:
     if tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(state, goal)))) <= 0.1:
-        return tf.constant(0., dtype=tf.float32)
-    return tf.constant(-1., dtype=tf.float32)
+        return tf.constant(1., dtype=tf.float32)
+    return tf.constant(0., dtype=tf.float32)
 
 if os.path.isfile(actor_checkpoint_file_name):
     actor = keras.models.load_model(actor_checkpoint_file_name)
@@ -184,9 +184,9 @@ for i in range(num_episodes):
         next_observation, reward, done, _ = env.step(chosen_action)
 
         sparse_reward = get_sparse_reward(observation, goal)
-        exp_buffer.store(observation, goal, chosen_action, next_observation, sparse_reward, float(done))
+        write_idx = exp_buffer.store(observation, goal, chosen_action, next_observation, sparse_reward, float(done))
         if not done:
-            replay_buffer_write_idxs.append(exp_buffer.get_write_idx())
+            replay_buffer_write_idxs.append(write_idx)
 
         observation = next_observation
         global_step+=1
@@ -196,7 +196,8 @@ for i in range(num_episodes):
     # Hindsight Experience Replay
     for idx in replay_buffer_write_idxs:
         #sub_goals = HER_GoalSelectionStrategy.final(exp_buffer, replay_buffer_write_idxs)
-        sub_goals = HER_GoalSelectionStrategy.episode(exp_buffer, replay_buffer_write_idxs, K)
+        #sub_goals = HER_GoalSelectionStrategy.episode(exp_buffer, replay_buffer_write_idxs, K)
+        sub_goals = HER_GoalSelectionStrategy.future(exp_buffer, replay_buffer_write_idxs, idx, K)
         for g in sub_goals:
             sub_goal_reward = get_sparse_reward(exp_buffer.states_memory[idx], g)
             exp_buffer.store(exp_buffer.states_memory[idx], 
@@ -206,7 +207,7 @@ for i in range(num_episodes):
                              sub_goal_reward, 
                              exp_buffer.dones_memory[idx])
 
-    if global_step > 10 * batch_size:
+    if global_step > 5 * batch_size:
         for _ in range(len(replay_buffer_write_idxs) // steps_train):
             actor_loss, critic_loss = train_actor_critic(*exp_buffer(batch_size))
             actor_loss_history.append(actor_loss)
