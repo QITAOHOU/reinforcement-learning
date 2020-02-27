@@ -42,6 +42,7 @@
     <Compile Include="lunar_lander_PolicyGradient.py">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="lunar_lander_evaluation.py" />
     <Compile Include="lunar_lander_SAC.py" />
     <Compile Include="lunar_lander_TD3.py">
       <SubType>Code</SubType>

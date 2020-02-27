@@ -83,17 +83,46 @@ class HER_SARST_RandomAccess_MemoryBuffer(object):
             tf.stack(self.goals_memory[idxs]), \
             tf.stack(self.dones_memory[idxs])
 
-class HER_GoalSelectionStrategy:
-    @staticmethod
-    def final(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int]):
-        return [memory_buffer.states_memory[episode_mem_idxs[-1]]]
-    @staticmethod
-    def episode(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int], K:int):
-        idxs = np.random.permutation(len(episode_mem_idxs))[:K]
-        return memory_buffer.states_memory[idxs]
-    @staticmethod
-    def future(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int], current_state_idx:int, K:int):
-        if len(episode_mem_idxs)-current_state_idx <= K:
+#class HER_GoalSelectionStrategy:
+#    @staticmethod
+#    def final(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int]):
+#        return [memory_buffer.states_memory[episode_mem_idxs[-1]]]
+#    @staticmethod
+#    def episode(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int], K:int):
+#        idxs = np.random.permutation(len(episode_mem_idxs))[:K]
+#        return memory_buffer.states_memory[idxs]
+#    @staticmethod
+#    def future(memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, episode_mem_idxs:List[int], current_state_idx:int, K:int):
+#        idxs = np.random.permutation(episode_mem_idxs[current_state_idx:])[:K] # take K random future states
+#        if len(idxs) == 0:
+#            return []
+#        return memory_buffer.states_memory[idxs]
+
+class GoalSelectionStrategy:
+    def __init__(self, memory_buffer:HER_SARST_RandomAccess_MemoryBuffer, K:int):
+        self.memory = memory_buffer
+        self.K = K
+    def sample_goals(self, episode_mem_idxs:List[int], current_state_idx:int):
+        pass
+
+class FinalStrategy(GoalSelectionStrategy):
+    def __init__(self, memory_buffer):
+        super().__init__(memory_buffer, 1)
+    def sample_goals(self, episode_mem_idxs:List[int], current_state_idx:int):
+        return [self.memory.states_memory[episode_mem_idxs[-1]]]
+
+class EpisodeStrategy(GoalSelectionStrategy):
+    def __init__(self, memory_buffer, K = 4):
+        super().__init__(memory_buffer, K)
+    def sample_goals(self, episode_mem_idxs:List[int], current_state_idx:int):
+        idxs = np.random.permutation(len(episode_mem_idxs))[:self.K]
+        return self.memory.states_memory[idxs]
+
+class FutureStrategy(GoalSelectionStrategy):
+    def __init__(self, memory_buffer, K = 4):
+        super().__init__(memory_buffer, K)
+    def sample_goals(self, episode_mem_idxs:List[int], current_state_idx:int):
+        idxs = np.random.permutation(episode_mem_idxs[current_state_idx:])[:self.K] # take K random future states
+        if len(idxs) == 0:
             return []
-        idxs = np.random.permutation(episode_mem_idxs[current_state_idx:])[:K] # take K random future states
-        return memory_buffer.states_memory[idxs]
+        return self.memory.states_memory[idxs]
