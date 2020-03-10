@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>9e5b33f6-4bd8-4f6d-8f56-78c4ed632669</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>lunar_lander_DDPG_HER.py</StartupFile>
+    <StartupFile>lunar_lander_TD3_HER.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -45,6 +45,9 @@
     <Compile Include="lunar_lander_evaluation.py" />
     <Compile Include="lunar_lander_SAC.py" />
     <Compile Include="lunar_lander_TD3.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="lunar_lander_TD3_HER.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="per\cartpole_per.py" />

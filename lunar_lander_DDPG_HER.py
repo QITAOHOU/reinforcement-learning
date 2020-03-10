@@ -55,15 +55,9 @@ def policy_network():
     #goal_input = keras.layers.Input(shape=(X_shape))
     #x = keras.layers.Concatenate()([observation_input, goal_input])
 
-    x = keras.layers.Dense(512, activation='relu', 
-                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(observation_goal_input)
-    x = keras.layers.Dense(256, activation='relu', 
-                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
-    x = keras.layers.Dense(64, activation='relu', 
-                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
+    x = keras.layers.Dense(256, activation='relu')(observation_goal_input)
+    x = keras.layers.Dense(128, activation='relu')(x)
+    x = keras.layers.Dense(64, activation='relu')(x)
     output = keras.layers.Dense(outputs_count, activation='tanh',
                                 kernel_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
                                 bias_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED))(x)
@@ -76,13 +70,9 @@ def critic_network():
     observation_goal_input = keras.layers.Input(shape=(X_shape))
 
     #x = keras.layers.Concatenate()([observation_input, goal_input])
-    x = keras.layers.Dense(512, activation='relu', 
-                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(observation_goal_input)
+    x = keras.layers.Dense(256, activation='relu')(observation_goal_input)
     x = keras.layers.Concatenate()([x, actions_input])
-    x = keras.layers.Dense(256, activation='relu', 
-                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
-                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
+    x = keras.layers.Dense(128, activation='relu')(x)
     q_layer = keras.layers.Dense(1, activation='linear',
                                 kernel_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
                                 bias_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
@@ -102,7 +92,7 @@ def train_actor_critic(states, actions, next_states, rewards, goals, dones):
 
     with tf.GradientTape() as tape:
         current_q = critic([states_and_goals, actions], training=True)
-        c_loss = mse_loss(current_q, target_q)# * 10
+        c_loss = mse_loss(current_q, target_q)
     gradients = tape.gradient(c_loss, critic.trainable_variables)
     critic_optimizer.apply_gradients(zip(gradients, critic.trainable_variables))
 
