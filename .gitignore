@@ -331,3 +331,4 @@ ASALocalRun/
 .mfractor/
 
 *.h5
+checkpoints/*.*

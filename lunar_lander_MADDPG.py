@@ -1,8 +1,9 @@
 import gym
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
 import os
+import tensorflow as tf
+from collections import defaultdict
+from tensorflow import keras
 from rl_utils import OUActionNoise, MA_SARST_RandomAccess_MemoryBuffer
 
 # prevent TensorFlow of allocating whole GPU memory
@@ -18,22 +19,25 @@ for i in range(agents_count):
 X_shape = (envs[0].observation_space.shape[0])
 outputs_count = envs[0].action_space.shape[0]
 
-batch_size = 64
+batch_size = 128
 num_episodes = 5000
-actor_learning_rate = 1e-4
-critic_learning_rate = 1e-3
+actor_learning_rate = 5e-4
+critic_learning_rate = 5e-3
 gamma = 0.99
 tau = 0.001
 
 RND_SEED = 0x12345
 
-checkpoint_step = 500
+checkpoint_step = 100
 max_epoch_steps = 1000
 global_step = 0
 steps_train = 4
 
-actor_checkpoint_file_name = 'll_maddpg_actor_checkpoint.h5'
-critic_checkpoint_file_name = 'll_maddpg_critic_checkpoint.h5'
+actor_checkpoint_file_name = 'checkpoints/ll_maddpg_actor_{aidx}.h5'
+target_actor_checkpoint_file_name = 'checkpoints/ll_maddpg_t_actor_{aidx}.h5'
+
+critic_checkpoint_file_name = 'checkpoints/ll_maddpg_critic_{aidx}.h5'
+target_critic_checkpoint_file_name = 'checkpoints/ll_maddpg_t_critic_{aidx}.h5'
 
 actor_optimizer = tf.keras.optimizers.Adam(actor_learning_rate)
 critic_optimizer = tf.keras.optimizers.Adam(critic_learning_rate)
@@ -50,11 +54,11 @@ exp_buffer = MA_SARST_RandomAccess_MemoryBuffer(exp_buffer_capacity, agents_coun
 
 def policy_network():
     input = keras.layers.Input(shape=(X_shape))
-    x = keras.layers.Dense(400, activation='relu', 
+    x = keras.layers.Dense(256, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(input)
     #x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.Dense(300, activation='relu', 
+    x = keras.layers.Dense(128, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED))(x)
     #x = keras.layers.BatchNormalization()(x)
@@ -72,14 +76,19 @@ def critic_network():
     flat_input = keras.layers.Flatten()(input)
     flat_actions_input = keras.layers.Flatten()(actions_input)
 
-    x = keras.layers.Dense(400, activation='relu', 
+    x = keras.layers.Dense(512, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            kernel_regularizer = keras.regularizers.l2(0.01),
                            bias_regularizer = keras.regularizers.l2(0.01))(flat_input)
     #x = keras.layers.BatchNormalization()(x)
     x = keras.layers.Concatenate()([x, flat_actions_input])
-    x = keras.layers.Dense(300, activation='relu', 
+    x = keras.layers.Dense(256, activation='relu', 
+                           kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
+                           bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
+                           kernel_regularizer = keras.regularizers.l2(0.01),
+                           bias_regularizer = keras.regularizers.l2(0.01))(x)
+    x = keras.layers.Dense(100, activation='relu', 
                            kernel_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            bias_initializer = keras.initializers.VarianceScaling(scale=0.3, mode='fan_in', distribution='uniform', seed=RND_SEED),
                            kernel_regularizer = keras.regularizers.l2(0.01),
@@ -90,6 +99,12 @@ def critic_network():
                                 bias_initializer = keras.initializers.RandomUniform(minval= -0.003, maxval=0.003, seed=RND_SEED),
                                 kernel_regularizer = keras.regularizers.l2(0.01),
                                 bias_regularizer = keras.regularizers.l2(0.01))(x)
+    #x = keras.layers.Dense(256, activation='relu')(flat_input)
+    #x = keras.layers.BatchNormalization()(x)
+    #x = keras.layers.Concatenate()([x, flat_actions_input])
+    #x = keras.layers.Dense(128, activation='relu')(x)
+    #x = keras.layers.BatchNormalization()(x)
+    #q_layer = keras.layers.Dense(1, activation='linear')(x)
 
     model = keras.Model(inputs=[input, actions_input], outputs=q_layer)
     return model
@@ -102,7 +117,7 @@ def train_actor_critic(states, actions, next_states, rewards, dones):
     cumm_critic_loss.assign(0.)
     cumm_actor_loss.assign(0.)
 
-    target_mu_array = tf.TensorArray(tf.float32,size=agents_count,infer_shape=False,element_shape=(batch_size, outputs_count))
+    target_mu_array = tf.TensorArray(tf.float32,size=agents_count,infer_shape=False,element_shape=(batch_size, outputs_count))  #shape = (agents_count, batch_size, outputs_count)
     for idx in np.arange(agents_count):
         agent_specific_next_states = tf.squeeze(tf.slice(next_states, (0,idx,0), (batch_size,1,X_shape)), axis=1)
         target_mu_array = target_mu_array.write(idx, target_policies[idx](agent_specific_next_states, training=False))
@@ -122,25 +137,25 @@ def train_actor_critic(states, actions, next_states, rewards, dones):
 
         with tf.GradientTape() as tape:
             current_q = critic([states, actions], training=True)
-            c_loss = mse_loss(current_q, target_q) / batch_size
+            c_loss = mse_loss(current_q, target_q) / agents_count
             cumm_critic_loss.assign_add(c_loss)
         gradients = tape.gradient(c_loss, critic.trainable_variables)
         critic_optimizer.apply_gradients(zip(gradients, critic.trainable_variables))
 
         actions_array = tf.TensorArray(tf.float32,size = agents_count,infer_shape=False,element_shape=(batch_size,outputs_count))
-        # make shape (agents_count,batch_size,outputs_count) to make replacement easy for specific agent
+        # reshape to (agents_count,batch_size,outputs_count) for making replacement easy for specific agent
         actions_array.unstack(tf.reshape(actions, (agents_count,batch_size,outputs_count)))
 
+        # extract agent specific states from states minibatch
         agent_specific_states = tf.squeeze(tf.slice(states, (0,agent_idx,0), (batch_size,1,X_shape)), axis=1)
         with tf.GradientTape() as tape:
-            current_mu = actor(agent_specific_states, training=True) #set on agent_idx's place in actions minibatch, shape=(batch_size,outputs_count)
+            current_mu = actor(agent_specific_states, training=True) # shape=(batch_size,outputs_count)
             
-            actions_array = actions_array.write(agent_idx, current_mu)
+            actions_array = actions_array.write(agent_idx, current_mu) # replace agent's actions in actions minibatch
             actions_with_replaced_for_agent = tf.reshape(actions_array.stack(), (batch_size,agents_count,outputs_count)) # shape (batch_size,agents_count, outputs_count)
-            tape.watch(actions_with_replaced_for_agent)
             
             current_q = critic([states, actions_with_replaced_for_agent], training=False)
-            a_loss = tf.reduce_mean(-current_q) / batch_size
+            a_loss = tf.reduce_mean(-current_q) / agents_count
             cumm_actor_loss.assign_add(a_loss)
         gradients = tape.gradient(a_loss, actor.trainable_variables)
         actor_optimizer.apply_gradients(zip(gradients, actor.trainable_variables))
@@ -163,41 +178,51 @@ def soft_update_models():
             updated_critic_weights.append(tau * cw + (1.0 - tau) * tcw)
         target_critics[agent_idx].set_weights(updated_critic_weights)
 
-#if os.path.isfile(actor_checkpoint_file_name):
-#    actor = keras.models.load_model(actor_checkpoint_file_name)
-#    print("Model restored from checkpoint.")
-#else:
-#    actor = policy_network()
-#    print("New model created.")
-
-#if os.path.isfile(critic_checkpoint_file_name):
-#    critic = keras.models.load_model(critic_checkpoint_file_name)
-#    print("Critic model restored from checkpoint.")
-#else:
-#    critic = critic_network()
-#    print("New Critic model created.")
-
-#target_policy = policy_network()
-#target_policy.set_weights(actor.get_weights())
-
-#target_critic = critic_network()
-#target_critic.set_weights(critic.get_weights())
-
 actors = []
 target_policies = []
-for i in range(agents_count):
-    actors.append(policy_network())
-    target_policies.append(policy_network())
-    target_policies[i].set_weights(actors[i].get_weights())
-
 critics = []
 target_critics = []
-for i in range(agents_count):
-    critics.append(critic_network())
-    target_critics.append(critic_network())
-    target_critics[i].set_weights(critics[i].get_weights())
+
+def save_checkpoint():
+    for idx in range(agents_count):
+        actors[idx].save(actor_checkpoint_file_name.format(aidx=idx))
+        target_policies[idx].save(target_actor_checkpoint_file_name.format(aidx=idx))
+        critics[idx].save(critic_checkpoint_file_name.format(aidx=idx))
+        target_critics[idx].save(target_critic_checkpoint_file_name.format(aidx=idx))
+
+def load_or_create_models():
+    for idx in range(agents_count):
+        #restore or create actors
+        if os.path.isfile(actor_checkpoint_file_name.format(aidx=idx)):
+            actors.append(keras.models.load_model(actor_checkpoint_file_name.format(aidx=idx)))
+        else:
+            actors.append(policy_network())
+
+        #restore or create target actors
+        if os.path.isfile(target_actor_checkpoint_file_name.format(aidx=idx)):
+            target_policies.append(keras.models.load_model(target_actor_checkpoint_file_name.format(aidx=idx)))
+        else:
+            target_policies.append(policy_network())
+            target_policies[idx].set_weights(actors[idx].get_weights())
+
+        #restore or create critics
+        if os.path.isfile(critic_checkpoint_file_name.format(aidx=idx)):
+            critics.append(keras.models.load_model(critic_checkpoint_file_name.format(aidx=idx)))
+        else:
+            critics.append(critic_network())
+
+        #restore or create target critics
+        if os.path.isfile(target_critic_checkpoint_file_name.format(aidx=idx)):
+            target_critics.append(keras.models.load_model(target_critic_checkpoint_file_name.format(aidx=idx)))
+        else:
+            target_critics.append(critic_network())
+            target_critics[idx].set_weights(critics[idx].get_weights())
+
+load_or_create_models()
 
 rewards_history = []
+
+training_started = False
 
 for i in range(num_episodes):
     observations = []
@@ -211,6 +236,7 @@ for i in range(num_episodes):
     actor_loss_history = []
 
     terminated = [False for _ in range(agents_count)]
+    terminal_states = defaultdict(list)
 
     while not all(terminated):
         #env.render()
@@ -219,16 +245,36 @@ for i in range(num_episodes):
         agent_rewards = []
 
         for agent_idx in range(agents_count):
-            chosen_action = actors[agent_idx](np.expand_dims(observations[agent_idx], axis = 0), training=False)[0]
+            if terminal_states.get(agent_idx,None) != None:
+                # env is already in terminted state. Use stored terminal state.
+                agent_actions.append(terminal_states[agent_idx][0])
+                agent_next_observations.append(terminal_states[agent_idx][1])
+                agent_rewards.append(terminal_states[agent_idx][2])
+                #terminated array already contains 'done' flag for agent
+                continue
+
+            if not training_started:
+                chosen_action = 2 * np.random.random_sample((2,)) - 1 # [0;1) -> [-1;1)
+            else:
+                chosen_action = actors[agent_idx](np.expand_dims(observations[agent_idx], axis = 0), training=False)[0]
+
             agent_actions.append(chosen_action)
-            next_observation, reward, done, _ = envs[agent_idx].step(chosen_action.numpy() + action_noise())
+
+            action_with_noise = chosen_action
+            if training_started:
+                action_with_noise = chosen_action + action_noise()
+
+            next_observation, reward, done, _ = envs[agent_idx].step(action_with_noise)
             agent_next_observations.append(next_observation)
             agent_rewards.append(reward)
             terminated[agent_idx] = done
+            if done:
+                terminal_states[agent_idx]=[chosen_action, next_observation, reward]
 
         exp_buffer.store(observations, agent_actions, agent_next_observations, agent_rewards, np.array(terminated, dtype=np.float32))
 
         if global_step > 10 * batch_size and global_step % steps_train == 0:
+            training_started = True
             actor_loss, critic_loss = train_actor_critic(*exp_buffer(batch_size))
 
             actor_loss_history.append(actor_loss)
@@ -241,14 +287,13 @@ for i in range(num_episodes):
 
         global_step+=1
         epoch_steps+=1
-        episodic_reward += np.mean(agent_rewards)
+        episodic_reward += (np.mean(agent_rewards) / agents_count)
 
-    #if i % checkpoint_step == 0 and i > 0:
-    #    actor.save(actor_checkpoint_file_name)
-    #    critic.save(critic_checkpoint_file_name)
+    if i % checkpoint_step == 0 and i > 0:
+        save_checkpoint()
 
     rewards_history.append(episodic_reward)
-    last_mean = np.mean(rewards_history[-100:]) / agents_count
+    last_mean = np.mean(rewards_history[-100:])
     print(f'[epoch {i} ({epoch_steps})] Actor_Loss: {np.mean(actor_loss_history):.4f} Critic_Loss: {np.mean(critic_loss_history):.4f} Total reward: {episodic_reward} Mean(100)={last_mean:.4f}')
     if last_mean > 200:
         break
