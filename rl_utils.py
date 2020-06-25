@@ -54,16 +54,18 @@ class MA_SARST_RandomAccess_MemoryBuffer(object):
         self.actions_memory = np.empty(shape=(buffer_size, agents_count, *action_shape), dtype = np.float32)
         self.rewards_memory = np.empty(shape=(buffer_size, agents_count, ), dtype = np.float32)
         self.dones_memory = np.empty(shape=(buffer_size, agents_count, ), dtype = np.float32)
+        self.skip_memory = np.empty(shape=(buffer_size, agents_count, ), dtype = np.float32)
         self.buffer_size = buffer_size
         self.memory_idx = 0
 
-    def store(self, state:tf.Tensor, action:tf.Tensor, next_state:tf.Tensor, reward:tf.Tensor, is_terminal:tf.Tensor):
+    def store(self, state:tf.Tensor, action:tf.Tensor, next_state:tf.Tensor, reward:tf.Tensor, is_terminal:tf.Tensor, skip:tf.Tensor):
         write_idx = self.memory_idx % self.buffer_size
         self.states_memory[write_idx] = state
         self.next_states_memory[write_idx] = next_state
         self.actions_memory[write_idx] = action
         self.rewards_memory[write_idx] = reward
         self.dones_memory[write_idx] = is_terminal
+        self.skip_memory[write_idx] = skip
         self.memory_idx += 1
 
     def __call__(self, batch_size):
@@ -73,4 +75,5 @@ class MA_SARST_RandomAccess_MemoryBuffer(object):
             tf.stack(self.actions_memory[idxs]), \
             tf.stack(self.next_states_memory[idxs]), \
             tf.stack(self.rewards_memory[idxs]), \
-            tf.stack(self.dones_memory[idxs])
+            tf.stack(self.dones_memory[idxs]), \
+            tf.stack(self.skip_memory[idxs])

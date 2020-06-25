@@ -30,7 +30,7 @@ outputs_count = envs[0].action_space.shape[0]
 batch_size = 100
 num_episodes = 5000
 actor_learning_rate = 3e-4
-critic_learning_rate = 3e-4
+critic_learning_rate = 3e-3
 alpha_learning_rate = 3e-4
 gamma = 0.99
 tau = 0.005
@@ -124,7 +124,7 @@ def get_log_probs(mu, sigma, actions):
     return log_probs
 
 @tf.function
-def train_actor(states):
+def train_actors(states, skips):
     cumm_actor_loss.assign(0.)
     for agent_idx in np.arange(agents_count):
         alpha = tf.math.exp(alpha_log[agent_idx])
@@ -136,6 +136,7 @@ def train_actor(states):
             log_sigma = tf.clip_by_value(tf.squeeze(log_sigma), log_std_min, log_std_max)
 
             agent_target_actions = get_actions(mu, log_sigma)
+            agent_skips = tf.squeeze(tf.slice(skips, (0,agent_idx), (batch_size,1)), axis=1)
 
             actions_array = tf.TensorArray(tf.float32,size = agents_count,infer_shape=False,element_shape=(batch_size,outputs_count))
             actions_array.unstack(tf.reshape(actions, (agents_count,batch_size,outputs_count)))
@@ -144,10 +145,11 @@ def train_actor(states):
         
             target_q = tf.math.minimum(critics_1[agent_idx]([states, actions_with_replaced_for_agent], training=False), \
                                        critics_2[agent_idx]([states, actions_with_replaced_for_agent], training=False))
-            target_q = tf.squeeze(target_q, axis=1)
+            target_q = tf.squeeze(target_q, axis=1) * (1 - agent_skips) # zero Q values for states that should be skipped
         
             sigma = tf.math.exp(log_sigma)
             log_probs = get_log_probs(mu, sigma, agent_target_actions)
+            log_probs = log_probs * (1 - agent_skips) # zero probabilities for actions that should be skipped
 
             actor_loss = tf.reduce_mean(alpha * log_probs - target_q)
             cumm_actor_loss.assign_add(actor_loss)
@@ -162,7 +164,7 @@ def train_actor(states):
     return cumm_actor_loss
 
 @tf.function
-def train_critics(states, actions, next_states, rewards, dones):
+def train_critics(states, actions, next_states, rewards, dones, skips):
     cumm_critic1_loss.assign(0.)
     cumm_critic2_loss.assign(0.)
 
@@ -194,11 +196,14 @@ def train_critics(states, actions, next_states, rewards, dones):
 
         agent_rewards = tf.squeeze(tf.slice(rewards, (0,agent_idx), (batch_size,1)), axis=1)
         agent_dones = tf.squeeze(tf.slice(dones, (0,agent_idx), (batch_size,1)), axis=1)
+        agent_skips = tf.squeeze(tf.slice(skips, (0,agent_idx), (batch_size,1)), axis=1)
 
-        target_q = agent_rewards + gamma * (1 - agent_dones) * next_values
+        target_q = (agent_rewards + gamma * (1 - agent_dones) * next_values)
+        target_q = target_q * (1 - agent_skips) # zero Q values for states that should be skipped
 
         with tf.GradientTape() as tape:
             current_q = critics_1[agent_idx]([states, actions], training=True)
+            current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
             c1_loss = mse_loss(current_q, target_q)
             cumm_critic1_loss.assign_add(c1_loss)
         gradients = tape.gradient(c1_loss, critics_1[agent_idx].trainable_variables)
@@ -206,6 +211,7 @@ def train_critics(states, actions, next_states, rewards, dones):
 
         with tf.GradientTape() as tape:
             current_q = critics_2[agent_idx]([states, actions], training=True)
+            current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
             c2_loss = mse_loss(current_q, target_q)
             cumm_critic2_loss.assign_add(c2_loss)
         gradients = tape.gradient(c2_loss, critics_2[agent_idx].trainable_variables)
@@ -299,6 +305,8 @@ for i in range(num_episodes):
     episode_rewards = defaultdict(float)
 
     terminated = [False for _ in range(agents_count)]
+    skip_training = [False for _ in range(agents_count)]
+    
     terminal_states = defaultdict(list)
 
     while not all(terminated):
@@ -313,6 +321,8 @@ for i in range(num_episodes):
                 agent_actions.append(terminal_states[agent_idx][0])
                 agent_next_observations.append(terminal_states[agent_idx][1])
                 agent_rewards.append(terminal_states[agent_idx][2])
+                # This handles situation when particular agent reached terminal state but others still exploring environnment
+                skip_training[agent_idx] = True # skip this record when training.
                 #terminated array already contains 'done' flag for agent
                 continue
 
@@ -334,18 +344,19 @@ for i in range(num_episodes):
             if done:
                 terminal_states[agent_idx]=[chosen_action, next_observation, reward]
 
-        exp_buffer.store(observations, agent_actions, agent_next_observations, agent_rewards, np.array(terminated, dtype=np.float32))
+        exp_buffer.store(observations, agent_actions, agent_next_observations, agent_rewards, 
+                         np.array(terminated, dtype=np.float32), np.array(skip_training, dtype=np.float32))
 
         if global_step > 10 * batch_size and global_step % steps_train == 0:
             training_started = True
-            states, actions, next_states, rewards, dones = exp_buffer(batch_size)
+            states, actions, next_states, rewards, dones, skips = exp_buffer(batch_size)
 
             for _ in range(gradient_step):
-                critic1_loss, critic2_loss = train_critics(states, actions, next_states, rewards, dones)
+                critic1_loss, critic2_loss = train_critics(states, actions, next_states, rewards, dones, skips)
                 critic_loss_history.append(critic1_loss / agents_count)
                 critic_loss_history.append(critic2_loss / agents_count)
             
-                actor_loss = train_actor(states)
+                actor_loss = train_actors(states, skips)
                 actor_loss_history.append(actor_loss / agents_count)
             soft_update_models()
 

@@ -113,11 +113,12 @@ cumm_critic_loss = tf.Variable(0., dtype = tf.float32, trainable=False)
 cumm_actor_loss = tf.Variable(0., dtype = tf.float32, trainable=False)
 
 @tf.function
-def train_actor_critic(states, actions, next_states, rewards, dones):
+def train_actor_critic(states, actions, next_states, rewards, dones, skips):
     cumm_critic_loss.assign(0.)
     cumm_actor_loss.assign(0.)
 
-    target_mu_array = tf.TensorArray(tf.float32,size=agents_count,infer_shape=False,element_shape=(batch_size, outputs_count))  #shape = (agents_count, batch_size, outputs_count)
+    #shape = (agents_count, batch_size, outputs_count)
+    target_mu_array = tf.TensorArray(tf.float32,size=agents_count,infer_shape=False,element_shape=(batch_size, outputs_count))
     for idx in np.arange(agents_count):
         agent_specific_next_states = tf.squeeze(tf.slice(next_states, (0,idx,0), (batch_size,1,X_shape)), axis=1)
         target_mu_array = target_mu_array.write(idx, target_policies[idx](agent_specific_next_states, training=False))
@@ -128,16 +129,19 @@ def train_actor_critic(states, actions, next_states, rewards, dones):
         #rewards and dones are for specific agent only
         agent_rewards = tf.squeeze(tf.slice(rewards, (0,agent_idx), (batch_size,1)), axis=1)
         agent_dones = tf.squeeze(tf.slice(dones, (0,agent_idx), (batch_size,1)), axis=1)
+        agent_skips = tf.squeeze(tf.slice(skips, (0,agent_idx), (batch_size,1)), axis=1)
 
         actor = actors[agent_idx]
         critic = critics[agent_idx]
         target_critic = target_critics[agent_idx]
 
         target_q = agent_rewards + gamma * tf.reduce_max((1 - agent_dones) * target_critic([next_states, target_mu], training=False), axis = 1)
+        target_q = target_q * (1 - agent_skips) # zero Q values for states that should be skipped
 
         with tf.GradientTape() as tape:
             current_q = critic([states, actions], training=True)
-            c_loss = mse_loss(current_q, target_q) / agents_count
+            current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
+            c_loss = mse_loss(current_q, target_q)# / agents_count
             cumm_critic_loss.assign_add(c_loss)
         gradients = tape.gradient(c_loss, critic.trainable_variables)
         critic_optimizer.apply_gradients(zip(gradients, critic.trainable_variables))
@@ -155,7 +159,9 @@ def train_actor_critic(states, actions, next_states, rewards, dones):
             actions_with_replaced_for_agent = tf.reshape(actions_array.stack(), (batch_size,agents_count,outputs_count)) # shape (batch_size,agents_count, outputs_count)
             
             current_q = critic([states, actions_with_replaced_for_agent], training=False)
-            a_loss = tf.reduce_mean(-current_q) / agents_count
+            current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
+
+            a_loss = tf.reduce_mean(-current_q) # / agents_count
             cumm_actor_loss.assign_add(a_loss)
         gradients = tape.gradient(a_loss, actor.trainable_variables)
         actor_optimizer.apply_gradients(zip(gradients, actor.trainable_variables))
@@ -190,17 +196,20 @@ def save_checkpoint():
         critics[idx].save(critic_checkpoint_file_name.format(aidx=idx))
         target_critics[idx].save(target_critic_checkpoint_file_name.format(aidx=idx))
 
-def load_or_create_models():
+def load_or_create_models() -> bool:
+    loaded_models = 0
     for idx in range(agents_count):
         #restore or create actors
         if os.path.isfile(actor_checkpoint_file_name.format(aidx=idx)):
             actors.append(keras.models.load_model(actor_checkpoint_file_name.format(aidx=idx)))
+            loaded_models+=1
         else:
             actors.append(policy_network())
 
         #restore or create target actors
         if os.path.isfile(target_actor_checkpoint_file_name.format(aidx=idx)):
             target_policies.append(keras.models.load_model(target_actor_checkpoint_file_name.format(aidx=idx)))
+            loaded_models+=1
         else:
             target_policies.append(policy_network())
             target_policies[idx].set_weights(actors[idx].get_weights())
@@ -208,21 +217,22 @@ def load_or_create_models():
         #restore or create critics
         if os.path.isfile(critic_checkpoint_file_name.format(aidx=idx)):
             critics.append(keras.models.load_model(critic_checkpoint_file_name.format(aidx=idx)))
+            loaded_models+=1
         else:
             critics.append(critic_network())
 
         #restore or create target critics
         if os.path.isfile(target_critic_checkpoint_file_name.format(aidx=idx)):
             target_critics.append(keras.models.load_model(target_critic_checkpoint_file_name.format(aidx=idx)))
+            loaded_models+=1
         else:
             target_critics.append(critic_network())
             target_critics[idx].set_weights(critics[idx].get_weights())
+    return loaded_models == agents_count * 4
 
-load_or_create_models()
+training_started = load_or_create_models()
 
 rewards_history = []
-
-training_started = False
 
 for i in range(num_episodes):
     observations = []
@@ -235,6 +245,7 @@ for i in range(num_episodes):
     critic_loss_history = []
     actor_loss_history = []
 
+    skip_training = [False for _ in range(agents_count)]
     terminated = [False for _ in range(agents_count)]
     terminal_states = defaultdict(list)
 
@@ -250,6 +261,8 @@ for i in range(num_episodes):
                 agent_actions.append(terminal_states[agent_idx][0])
                 agent_next_observations.append(terminal_states[agent_idx][1])
                 agent_rewards.append(terminal_states[agent_idx][2])
+                # This handles situation when particular agent reached terminal state but others still exploring environnment
+                skip_training[agent_idx] = True # skip this record when training.
                 #terminated array already contains 'done' flag for agent
                 continue
 
@@ -271,7 +284,8 @@ for i in range(num_episodes):
             if done:
                 terminal_states[agent_idx]=[chosen_action, next_observation, reward]
 
-        exp_buffer.store(observations, agent_actions, agent_next_observations, agent_rewards, np.array(terminated, dtype=np.float32))
+        exp_buffer.store(observations, agent_actions, agent_next_observations, agent_rewards, 
+                         np.array(terminated, dtype=np.float32), np.array(skip_training, dtype=np.float32))
 
         if global_step > 10 * batch_size and global_step % steps_train == 0:
             training_started = True
