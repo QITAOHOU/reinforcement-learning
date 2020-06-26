@@ -20,6 +20,8 @@ tf.config.experimental.set_memory_growth(gpus[0], True)
 
 agents_count = 10
 
+zero_repeated_states = True
+
 envs = []
 for i in range(agents_count):
     envs.append(gym.make('LunarLanderContinuous-v2'))
@@ -27,14 +29,14 @@ for i in range(agents_count):
 X_shape = (envs[0].observation_space.shape[0])
 outputs_count = envs[0].action_space.shape[0]
 
-batch_size = 100
+batch_size = 200
 num_episodes = 5000
 actor_learning_rate = 3e-4
-critic_learning_rate = 3e-3
+critic_learning_rate = 3e-4
 alpha_learning_rate = 3e-4
 gamma = 0.99
 tau = 0.005
-gradient_step = 1
+gradient_step = agents_count // 2 #1
 log_std_min=-20
 log_std_max=2
 action_bounds_epsilon=1e-6
@@ -77,7 +79,7 @@ exp_buffer = MA_SARST_RandomAccess_MemoryBuffer(exp_buffer_capacity, agents_coun
 def policy_network():
     input = keras.layers.Input(shape=(X_shape))
     x = keras.layers.Dense(256, activation='relu')(input)
-    x = keras.layers.Dense(128, activation='relu')(x)
+    x = keras.layers.Dense(256, activation='relu')(x)
     mean_output = keras.layers.Dense(outputs_count, activation='linear',
                                 kernel_initializer = keras.initializers.RandomUniform(minval=-initializer_bounds, maxval=initializer_bounds, seed=RND_SEED),
                                 bias_initializer = keras.initializers.RandomUniform(minval=-initializer_bounds, maxval=initializer_bounds, seed=RND_SEED))(x)
@@ -96,8 +98,8 @@ def critic_network():
     flat_actions_input = keras.layers.Flatten()(actions_input)
 
     x = keras.layers.Concatenate()([flat_input, flat_actions_input])
-    x = keras.layers.Dense(512, activation='relu')(x)
-    x = keras.layers.Dense(256, activation='relu')(x)
+    x = keras.layers.Dense(1024, activation='relu')(x)
+    x = keras.layers.Dense(1024, activation='relu')(x)
     q_layer = keras.layers.Dense(1, activation='linear',
                                 kernel_initializer = keras.initializers.RandomUniform(minval=-initializer_bounds, maxval=initializer_bounds, seed=RND_SEED),
                                 bias_initializer = keras.initializers.RandomUniform(minval=-initializer_bounds, maxval=initializer_bounds, seed=RND_SEED))(x)
@@ -145,11 +147,13 @@ def train_actors(states, skips):
         
             target_q = tf.math.minimum(critics_1[agent_idx]([states, actions_with_replaced_for_agent], training=False), \
                                        critics_2[agent_idx]([states, actions_with_replaced_for_agent], training=False))
-            target_q = tf.squeeze(target_q, axis=1) * (1 - agent_skips) # zero Q values for states that should be skipped
+            if zero_repeated_states:
+                target_q = tf.squeeze(target_q, axis=1) * (1 - agent_skips) # zero Q values for states that should be skipped
         
             sigma = tf.math.exp(log_sigma)
             log_probs = get_log_probs(mu, sigma, agent_target_actions)
-            log_probs = log_probs * (1 - agent_skips) # zero probabilities for actions that should be skipped
+            if zero_repeated_states:
+                log_probs = log_probs * (1 - agent_skips) # zero probabilities for actions that should be skipped
 
             actor_loss = tf.reduce_mean(alpha * log_probs - target_q)
             cumm_actor_loss.assign_add(actor_loss)
@@ -199,11 +203,13 @@ def train_critics(states, actions, next_states, rewards, dones, skips):
         agent_skips = tf.squeeze(tf.slice(skips, (0,agent_idx), (batch_size,1)), axis=1)
 
         target_q = (agent_rewards + gamma * (1 - agent_dones) * next_values)
-        target_q = target_q * (1 - agent_skips) # zero Q values for states that should be skipped
+        if zero_repeated_states:
+            target_q = target_q * (1 - agent_skips) # zero Q values for states that should be skipped
 
         with tf.GradientTape() as tape:
             current_q = critics_1[agent_idx]([states, actions], training=True)
-            current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
+            if zero_repeated_states:
+                current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
             c1_loss = mse_loss(current_q, target_q)
             cumm_critic1_loss.assign_add(c1_loss)
         gradients = tape.gradient(c1_loss, critics_1[agent_idx].trainable_variables)
@@ -211,7 +217,8 @@ def train_critics(states, actions, next_states, rewards, dones, skips):
 
         with tf.GradientTape() as tape:
             current_q = critics_2[agent_idx]([states, actions], training=True)
-            current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
+            if zero_repeated_states:
+                current_q = current_q * (1 - agent_skips) # zero Q values for states that should be skipped
             c2_loss = mse_loss(current_q, target_q)
             cumm_critic2_loss.assign_add(c2_loss)
         gradients = tape.gradient(c2_loss, critics_2[agent_idx].trainable_variables)
@@ -349,9 +356,10 @@ for i in range(num_episodes):
 
         if global_step > 10 * batch_size and global_step % steps_train == 0:
             training_started = True
-            states, actions, next_states, rewards, dones, skips = exp_buffer(batch_size)
-
             for _ in range(gradient_step):
+                states, actions, next_states, rewards, dones, skips = exp_buffer(batch_size)
+
+                #for _ in range(gradient_step):
                 critic1_loss, critic2_loss = train_critics(states, actions, next_states, rewards, dones, skips)
                 critic_loss_history.append(critic1_loss / agents_count)
                 critic_loss_history.append(critic2_loss / agents_count)
